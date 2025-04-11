@@ -16,7 +16,7 @@ def setup():
     os.makedirs(STUDENT_DB, exist_ok=True)
     
     # Initialize camera
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(1)
     if not cap.isOpened():
         raise RuntimeError("Could not open camera")
     return cap
@@ -36,11 +36,14 @@ def load_student_data():
     for file in os.listdir(STUDENT_DB):
         if file.endswith(('.jpg', '.png')):
             path = os.path.join(STUDENT_DB, file)
+            print(f"Loading: {path}")
             image = face_recognition.load_image_file(path)
             encodings = face_recognition.face_encodings(image)
             if encodings:
                 known_encodings.append(encodings[0])
                 known_names.append(os.path.splitext(file)[0])
+            else:
+                print(f"No face found in {path}")
     
     return known_encodings, known_names
 
