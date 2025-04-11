@@ -1,119 +1,79 @@
 import cv2
-import os
-import argparse
-import serial
-from datetime import datetime
 import face_recognition
+import os
+from datetime import datetime
 
-# Configuration
-OUTPUT_DIR = "class_captures"
-STUDENT_DB = "student_images"
-SERIAL_PORT = 'COM3'  # Change to your Arduino port
-BAUD_RATE = 9600
+path = './ImagesAttendance'
 
-def setup():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    os.makedirs(STUDENT_DB, exist_ok=True)
-    
-    # Initialize camera
-    cap = cv2.VideoCapture(1)
-    if not cap.isOpened():
-        raise RuntimeError("Could not open camera")
-    return cap
+myList = os.listdir(path)
+images = [cv2.imread(os.path.join(path, cl)) for cl in myList]
+classNames = [os.path.splitext(cl)[0] for cl in myList]
+print(classNames)
 
-def capture_image(camera, filename):
-    ret, frame = camera.read()
-    if ret:
-        cv2.imwrite(filename, frame)
-        print(f"Captured: {filename}")
-        return filename
-    return None
+attendance = set()
+def findEncodings(images):
+    encodeList = []
+    for idx, img in enumerate(images):
+        try:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            face_encodings = face_recognition.face_encodings(img)
+            if len(face_encodings) > 0:
+                encodeList.append(face_encodings[0])
+        except Exception as e:
+            print(f"Error processing image {idx}: {e}")
+    return encodeList
 
-def load_student_data():
-    known_encodings = []
-    known_names = []
-    
-    for file in os.listdir(STUDENT_DB):
-        if file.endswith(('.jpg', '.png')):
-            path = os.path.join(STUDENT_DB, file)
-            print(f"Loading: {path}")
-            image = face_recognition.load_image_file(path)
-            encodings = face_recognition.face_encodings(image)
-            if encodings:
-                known_encodings.append(encodings[0])
-                known_names.append(os.path.splitext(file)[0])
-            else:
-                print(f"No face found in {path}")
-    
-    return known_encodings, known_names
 
-def process_attendance(start_img, end_img):
-    known_encodings, known_names = load_student_data()
-    present = set()
-    
-    for img_path in [start_img, end_img]:
-        image = face_recognition.load_image_file(img_path)
-        face_encodings = face_recognition.face_encodings(image)
-        
-        for encoding in face_encodings:
-            matches = face_recognition.compare_faces(known_encodings, encoding, tolerance=0.6)
-            if True in matches:
-                present.add(known_names[matches.index(True)])
-    
-    absent = set(known_names) - present
-    return sorted(present), sorted(absent)
+def markAttendance(name):
+    if name not in attendance:
+        with open('Attendance.csv', 'a') as f:
+            if f.tell() == 0:  # Check if the file is empty
+                f.write("Name,Date,Time\n")  # Write the headings
+            now = datetime.now()
+            dtString = now.strftime('%H:%M:%S')
+            f.write(f'{name},{now.strftime("%Y-%m-%d")},{dtString}\n')
+            attendance.add(name)
 
-def serial_listener():
-    camera = setup()
-    start_capture = None
-    
+
+encodeListKnown = findEncodings(images)
+print('Encoding Complete')
+
+# cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(1)
+
+while True:
     try:
-        ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-        print(f"Listening on {SERIAL_PORT}...")
-        
-        while True:
-            if ser.in_waiting > 0:
-                command = ser.readline().decode('utf-8').strip()
-                print(f"Received: {command}")
-                
-                if command == "CAPTURE_START":
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = os.path.join(OUTPUT_DIR, f"start_{timestamp}.jpg")
-                    start_capture = capture_image(camera, filename)
-                
-                elif command == "CAPTURE_END" and start_capture:
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = os.path.join(OUTPUT_DIR, f"end_{timestamp}.jpg")
-                    end_capture = capture_image(camera, filename)
-                    
-                    if end_capture:
-                        present, absent = process_attendance(start_capture, end_capture)
-                        print("\nAttendance Report:")
-                        print(f"Present: {present}")
-                        print(f"Absent: {absent}")
-                        
-                        # Save report
-                        report_file = os.path.join(OUTPUT_DIR, f"report_{timestamp}.txt")
-                        with open(report_file, 'w') as f:
-                            f.write(f"Attendance Report - {timestamp}\n\n")
-                            f.write("Present:\n" + "\n".join(present) + "\n\n")
-                            f.write("Absent:\n" + "\n".join(absent))
-    
-    finally:
-        camera.release()
-        if 'ser' in locals():
-            ser.close()
+        success, img = cap.read()
+        imgS = cv2.resize(img, (0, 0), None, 0.25, 0.25)
+        imgS = cv2.cvtColor(imgS, cv2.COLOR_BGR2RGB)
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--trigger', help='Direct capture trigger')
-    args = parser.parse_args()
-    
-    if args.trigger:
-        camera = setup()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = os.path.join(OUTPUT_DIR, f"{args.trigger}_{timestamp}.jpg")
-        capture_image(camera, filename)
-        camera.release()
-    else:
-        serial_listener()
+        facesCurFrame = face_recognition.face_locations(imgS)
+        encodesCurFrame = face_recognition.face_encodings(imgS, facesCurFrame)
+
+        for faceLoc, encodeFace in zip(facesCurFrame, encodesCurFrame):
+            matches = face_recognition.compare_faces(encodeListKnown, encodeFace)
+            faceDis = face_recognition.face_distance(encodeListKnown, encodeFace)
+            matchIndex = faceDis.argmin()
+
+            name = 'Unknown'
+            if matches[matchIndex]:
+                name = classNames[matchIndex].upper()
+
+            y1, x2, y2, x1 = [loc * 4 for loc in faceLoc]
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.rectangle(img, (x1, y2 - 35), (x2, y2), (0, 255, 0), cv2.FILLED)
+            cv2.putText(img, name, (x1 + 6, y2 - 6), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 2)
+            markAttendance(name)
+
+        cv2.imshow('Webcam', img)
+        if cv2.waitKey(1) == ord('q'):
+            break
+
+    except KeyboardInterrupt:
+        break
+
+    except Exception as e:
+        print('An error occurred:', e)
+
+cap.release()
+cv2.destroyAllWindows()
